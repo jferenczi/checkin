@@ -1,98 +1,318 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import Slider from '@react-native-community/slider';
+import { useFocusEffect } from '@react-navigation/native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Animated, Easing, Platform, Pressable, StyleSheet, useColorScheme, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+import {
+    getLocalDateKey,
+    loadAllCheckins,
+    loadCheckinForDate,
+    purgeCheckinsOlderThan,
+    upsertTodayCheckin,
+} from '@/utils/checkinStorage';
 
 export default function HomeScreen() {
-  return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+  const [energy, setEnergy] = useState(5);
+  const [mood, setMood] = useState(5);
+  const [focus, setFocus] = useState(5);
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
+  const [savedCount, setSavedCount] = useState(0);
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'error'>('idle');
+  const resetSaveLabelTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [buttonLabel, setButtonLabel] = useState('Save');
+  const buttonLabelOpacity = useRef(new Animated.Value(1)).current;
+
+  const insets = useSafeAreaInsets();
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === 'dark';
+  const colors = useMemo(() => {
+    const background = isDark ? '#000000' : '#FFFFFF';
+    const foreground = isDark ? '#FFFFFF' : '#000000';
+    const muted = isDark ? 'rgba(255,255,255,0.70)' : 'rgba(0,0,0,0.70)';
+    const border = isDark ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.12)';
+    const track = isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.18)';
+    return { background, foreground, muted, border, track };
+  }, [isDark]);
+
+  const sliderColor = colors.foreground;
+
+  const todayText = useMemo(() => {
+    try {
+      return new Intl.DateTimeFormat(undefined, { dateStyle: 'long' }).format(new Date());
+    } catch {
+      return new Date().toLocaleDateString();
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadInitial() {
+      await purgeCheckinsOlderThan(90);
+
+      const todayKey = getLocalDateKey();
+      const existing = await loadCheckinForDate(todayKey);
+
+      const all = await loadAllCheckins();
+      if (cancelled) return;
+      setSavedCount(all.length);
+
+      if (existing) {
+        setEnergy(existing.energy);
+        setMood(existing.mood);
+        setFocus(existing.focus);
+      }
+    }
+
+    void loadInitial();
+    return () => {
+      cancelled = true;
+      if (resetSaveLabelTimeoutRef.current) {
+        clearTimeout(resetSaveLabelTimeoutRef.current);
+        resetSaveLabelTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+
+      async function refreshCount() {
+        await purgeCheckinsOlderThan(90);
+        const all = await loadAllCheckins();
+        if (cancelled) return;
+        setSavedCount(all.length);
+      }
+
+      void refreshCount();
+      return () => {
+        cancelled = true;
+      };
+    }, [])
+  );
+
+  useEffect(() => {
+    const nextLabel = saveState === 'saving' ? 'Saving...' : saveState === 'error' ? 'Error' : 'Save';
+    if (nextLabel === buttonLabel) return;
+
+    buttonLabelOpacity.stopAnimation();
+    Animated.timing(buttonLabelOpacity, {
+      toValue: 0,
+      duration: 120,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (!finished) return;
+      setButtonLabel(nextLabel);
+      Animated.timing(buttonLabelOpacity, {
+        toValue: 1,
+        duration: 160,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }).start();
+    });
+  }, [buttonLabel, buttonLabelOpacity, saveState]);
+
+  return (
+    <ThemedView
+      style={[
+        styles.container,
+        {
+          backgroundColor: colors.background,
+          paddingTop: insets.top + 30,
+        },
+      ]}>
+      <ThemedView style={[styles.header, { backgroundColor: colors.background }]}>
+        <ThemedText type="title" style={styles.title}>
+          Daily check-in
         </ThemedText>
+        <ThemedText style={[styles.dateText, { color: colors.muted }]}>{todayText}</ThemedText>
       </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
+
+      <ThemedView style={[styles.card, { backgroundColor: colors.background }]}>
+        <MetricSlider
+          label="Energy"
+          value={energy}
+          onValueChange={setEnergy}
+          accentColor={sliderColor}
+          trackColor={colors.track}
+        />
+        <View style={[styles.divider, { borderColor: colors.border }]} />
+        <MetricSlider
+          label="Mood"
+          value={mood}
+          onValueChange={setMood}
+          accentColor={sliderColor}
+          trackColor={colors.track}
+        />
+        <View style={[styles.divider, { borderColor: colors.border }]} />
+        <MetricSlider
+          label="Focus"
+          value={focus}
+          onValueChange={setFocus}
+          accentColor={sliderColor}
+          trackColor={colors.track}
+        />
       </ThemedView>
-    </ParallaxScrollView>
+
+      <ThemedView style={[styles.footer, { backgroundColor: colors.background }]}>
+        <Pressable
+          accessibilityRole="button"
+          disabled={saveState === 'saving'}
+          style={({ pressed }) => [
+            styles.saveButton,
+            {
+              backgroundColor: '#000000',
+              borderColor: isDark ? '#FFFFFF' : '#000000',
+            },
+            pressed && saveState !== 'saving' && styles.saveButtonPressed,
+            saveState === 'saving' && styles.saveButtonDisabled,
+          ]}
+          onPress={async () => {
+            try {
+              setSaveState('saving');
+              await upsertTodayCheckin({ energy, mood, focus });
+              const all = await loadAllCheckins();
+              setSavedCount(all.length);
+
+              if (resetSaveLabelTimeoutRef.current) {
+                clearTimeout(resetSaveLabelTimeoutRef.current);
+              }
+              resetSaveLabelTimeoutRef.current = setTimeout(() => {
+                setSaveState('idle');
+              }, 700);
+            } catch {
+              setSaveState('error');
+              if (resetSaveLabelTimeoutRef.current) {
+                clearTimeout(resetSaveLabelTimeoutRef.current);
+              }
+              resetSaveLabelTimeoutRef.current = setTimeout(() => {
+                setSaveState('idle');
+              }, 1200);
+            }
+          }}>
+          <Animated.View style={{ opacity: buttonLabelOpacity }}>
+            <ThemedText
+              type="defaultSemiBold"
+              style={styles.saveButtonText}
+              numberOfLines={1}
+              suppressHighlighting>
+              {buttonLabel}
+            </ThemedText>
+          </Animated.View>
+        </Pressable>
+
+        <ThemedText style={[styles.savedCountText, { color: colors.muted }]}>Track count: {savedCount}</ThemedText>
+      </ThemedView>
+    </ThemedView>
+  );
+}
+
+function MetricSlider({
+  label,
+  value,
+  onValueChange,
+  accentColor,
+  trackColor,
+}: {
+  label: string;
+  value: number;
+  onValueChange: (value: number) => void;
+  accentColor: string;
+  trackColor: string;
+}) {
+  return (
+    <View style={styles.metricRow}>
+      <View style={styles.metricHeader}>
+        <ThemedText type="subtitle">{label}</ThemedText>
+        <ThemedText type="defaultSemiBold">{value}</ThemedText>
+      </View>
+      <Slider
+        value={value}
+        onValueChange={(next) => onValueChange(Math.round(next))}
+        minimumValue={1}
+        maximumValue={10}
+        step={1}
+        minimumTrackTintColor={accentColor}
+        maximumTrackTintColor={trackColor}
+        thumbTintColor={Platform.OS === 'android' ? accentColor : undefined}
+      />
+      <View style={styles.metricScale}>
+        <ThemedText style={styles.scaleText}>1</ThemedText>
+        <ThemedText style={styles.scaleText}>10</ThemedText>
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: 'row',
+  container: {
+    flex: 1,
+    padding: 20,
+    gap: 16,
+  },
+  header: {
+    gap: 6,
     alignItems: 'center',
-    gap: 8,
   },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
+  title: {
+    textAlign: 'center',
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+  dateText: {
+    opacity: 0.7,
+  },
+  card: {
+    borderRadius: 16,
+    padding: 16,
+    gap: 16,
+  },
+  divider: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  metricRow: {
+    gap: 10,
+  },
+  metricHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  metricScale: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  scaleText: {
+    opacity: 0.6,
+  },
+  footer: {
+    gap: 8,
+    alignItems: 'center',
+    paddingTop: 8,
+  },
+  saveButton: {
+    minWidth: 160,
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+  },
+  saveButtonPressed: {
+    opacity: 0.92,
+  },
+  saveButtonDisabled: {
+    opacity: 0.85,
+  },
+  saveButtonText: {
+    color: '#FFFFFF',
+    lineHeight: 20,
+  },
+  savedCountText: {
+    opacity: 0.7,
   },
 });
